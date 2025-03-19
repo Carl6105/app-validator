@@ -1,3 +1,35 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-[#0a0a0f] text-gray-200 light:bg-gray-50 light:text-gray-800;
+  }
+}
+
+@layer components {
+  .neon-border {
+    @apply border border-opacity-50 shadow-[0_0_15px_rgba(66,220,255,0.3)] light:shadow-[0_0_15px_rgba(59,130,246,0.3)];
+  }
+  
+  .glass-effect {
+    @apply bg-white/10 bg-opacity-10 backdrop-blur-sm light:bg-white light:bg-opacity-80 light:backdrop-blur-sm;
+  }
+  
+  .neon-text {
+    @apply text-[#42dcff] drop-shadow-[0_0_8px_rgba(66,220,255,0.6)] light:text-blue-600 light:drop-shadow-[0_0_8px_rgba(37,99,235,0.4)];
+  }
+  
+  .neon-purple {
+    @apply text-[#b742ff] drop-shadow-[0_0_8px_rgba(183,66,255,0.6)] light:text-purple-600 light:drop-shadow-[0_0_8px_rgba(147,51,234,0.4)];
+  }
+  
+  .gradient-dark {
+    @apply bg-gradient-to-r from-[#0a0a0f] to-[#1a1a2f] light:from-gray-50 light:to-gray-100;
+  }
+
+  .scrollbar-dark {
+    @apply scrollbar-thumb-gray-700 scrollbar-track-gray-900 light:scrollbar-thumb-gray-300 light:scrollbar-track-gray-100;
+  }
+}
