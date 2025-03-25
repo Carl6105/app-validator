@@ -1,13 +1,26 @@
-import React, { useState, useCallback, useMemo, memo, Suspense } from "react";
+import React, { useState, useCallback, useEffect } from "react";
+import { BrowserRouter as Router, Route, Routes, Navigate, useNavigate, Link } from "react-router-dom";
 import { FileUploader } from "./components/FileUploader";
 import { ValidationResults } from "./components/ValidationResults";
 import { CodePreview } from "./components/CodePreview";
-import { Code2, Wand2, Play, Sun, Moon, Terminal } from "lucide-react";
-import axios from "axios";
+import { FileHistory } from "./components/FileHistory";
+import { Login } from "./components/auth/Login";
+import { Register } from "./components/auth/Register";
+import { Code2, Wand2, Sun, Moon, Loader2, User } from "lucide-react";
 import type { FileWithContent, ValidationResult, StreamingState } from "./types";
 import { ThemeProvider, useTheme } from "./contexts/ThemeContext";
+import { AuthProvider, useAuth } from "./contexts/AuthContext";
 
-class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, error: Error | null }> {
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated } = useAuth();
+  console.log("ProtectedRoute - isAuthenticated:", isAuthenticated);
+  return isAuthenticated ? <>{children}</> : <Navigate to="/login" />;
+}
+
+class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
   constructor(props: { children: React.ReactNode }) {
     super(props);
     this.state = { hasError: false, error: null };
@@ -18,7 +31,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error('Error caught by boundary:', error, errorInfo);
+    console.error("Error caught by boundary:", error, errorInfo);
   }
 
   render() {
@@ -26,7 +39,15 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
       return (
         <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400">
           <h2 className="text-lg font-semibold mb-2">Something went wrong</h2>
-          <p className="text-sm">{this.state.error?.message || 'Please try refreshing the page'}</p>
+          <p className="text-sm">
+            {this.state.error?.message || "An unexpected error occurred. Please try refreshing the page."}
+          </p>
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-2 px-4 py-2 text-sm font-medium text-white bg-blue-500 rounded-lg hover:bg-blue-600"
+          >
+            Refresh Page
+          </button>
         </div>
       );
     }
@@ -36,323 +57,361 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
 
 const API_CONFIG = {
   url: "http://localhost:1234/v1/chat/completions",
-  model: "deepseek-coder-7b-instruct",
+  model: "qwen2.5-coder-3b-instruct",
   headers: {
     "Content-Type": "application/json",
-    "Authorization": "Bearer not-needed"
-  }
+    "Authorization": "Bearer not-needed",
+  },
 };
 
-const JUDGE0_CONFIG = {
-  url: "https://judge0-ce.p.rapidapi.com/submissions",
+const BACKEND_API = {
+  url: "http://localhost:5000/api/history",
   headers: {
-    "x-rapidapi-host": "judge0-ce.p.rapidapi.com",
-    "x-rapidapi-key": "f93374fe4fmsh608d5d902c40414p1d8441jsn39d1a5ee6e8e",
-    "Content-Type": "application/json"
-  }
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${localStorage.getItem("token")}`,
+  },
 };
 
-const MemoizedFileUploader = memo(FileUploader);
-const MemoizedValidationResults = memo(ValidationResults);
-const MemoizedCodePreview = memo(CodePreview);
+function LoadingScreen() {
+  const navigate = useNavigate();
+  const { isAuthenticated } = useAuth();
+
+  React.useEffect(() => {
+    const timer = setTimeout(() => {
+      if (isAuthenticated) {
+        navigate("/app");
+      } else {
+        navigate("/login");
+      }
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [navigate, isAuthenticated]);
+
+  return (
+    <div className="flex flex-col items-center justify-center min-h-screen bg-white dark:bg-[#0a0a0a]">
+      <Loader2 className="h-12 w-12 text-blue-500 animate-spin" />
+      <p className="mt-4 text-lg text-gray-900 dark:text-gray-100">Loading Code Amplifier...</p>
+    </div>
+  );
+}
 
 function AppContent() {
   const { theme, toggleTheme } = useTheme();
+  const { logout, user } = useAuth();
   const [files, setFiles] = useState<FileWithContent[]>([]);
   const [validationResults, setValidationResults] = useState<ValidationResult[]>([]);
   const [streamingState, setStreamingState] = useState<StreamingState>({
     isAnalyzing: false,
     currentFile: "",
-    currentStep: ""
+    currentStep: "",
   });
-
-  const [isCodeEditorOpen, setIsCodeEditorOpen] = useState(false);
-  const [codeToRun, setCodeToRun] = useState("");
-  const [executionOutput, setExecutionOutput] = useState("");
+  const [customPrompt, setCustomPrompt] = useState<string>("");
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
 
   const handleFilesSelected = useCallback(async (selectedFiles: File[]) => {
     const fileContents = await Promise.all(
-      selectedFiles.map(async (file) => ({
-        name: file.name,
-        path: (file as any).path || file.webkitRelativePath || file.name,
-        content: await file.text(),
-        extension: file.name.split(".").pop() || ""
-      }))
+      selectedFiles.map(async (file) => {
+        const relativePath = file.webkitRelativePath || file.name;
+        console.log(`Processing file: ${file.name}, Path: ${relativePath}`);
+        return {
+          name: file.name,
+          path: relativePath,
+          content: await file.text(),
+          extension: file.name.split(".").pop() || "",
+        };
+      })
     );
 
-    setFiles(fileContents);
+    setFiles((prevFiles) => [...prevFiles, ...fileContents]);
     setValidationResults([]);
   }, []);
 
+  const handleDeleteFile = useCallback((fileName: string) => {
+    setFiles((prevFiles) => prevFiles.filter((file) => file.name !== fileName));
+    setValidationResults((prevResults) => prevResults.filter((result) => result.fileName !== fileName));
+  }, []);
+
   const validateCode = useCallback(async () => {
-    if (files.length === 0) return;
+    if (!files.length || !user?.id) return;
 
     setStreamingState({ isAnalyzing: true, currentFile: "", currentStep: "Initializing..." });
-    setValidationResults([]);
+    const newResults: ValidationResult[] = [];
 
-    try {
-      await Promise.all(files.map(async (file) => {
-        setStreamingState((prev) => ({ ...prev, currentFile: file.path, currentStep: "Analyzing code..." }));
+    let systemPrompt =
+      "You are a code review assistant. Analyze the code for errors, improvements, and security vulnerabilities. Provide a score (0-100) in <SCORE:XX> format and suggest corrections in a code block.";
+    
+    if (customPrompt.trim()) {
+      systemPrompt += `\nAdditional instructions: ${customPrompt.trim()}`;
+    }
+
+    for (const file of files) {
+      setStreamingState((prev) => ({ ...prev, currentFile: file.path, currentStep: "Analyzing code..." }));
+
+      try {
+        const response = await fetch(API_CONFIG.url, {
+          method: "POST",
+          headers: API_CONFIG.headers,
+          body: JSON.stringify({
+            model: API_CONFIG.model,
+            messages: [
+              {
+                role: "system",
+                content: systemPrompt,
+              },
+              { role: "user", content: `Analyze this ${file.extension} file:\n${file.content}` },
+            ],
+            temperature: 0.7,
+            max_tokens: 2048,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Server error: ${response.status}`);
+        }
+
+        const data = (await response.json()) as { choices?: { message: { content: string } }[] };
+        const aiResponse = data?.choices?.[0]?.message?.content || "No response received.";
+
+        const scoreMatch = aiResponse.match(/<SCORE:(\d+)>/);
+        const score = Math.min(Math.max(parseInt(scoreMatch?.[1] || "0", 10), 0), 100);
+
+        const correctedCodeMatch = aiResponse.match(/```(?:\w+\n)?([\s\S]*?)```/);
+        const correctedCode = correctedCodeMatch ? correctedCodeMatch[1].trim() : undefined;
+
+        const result: ValidationResult = {
+          fileName: file.name,
+          path: file.path,
+          code: file.content,
+          result: aiResponse.replace(/```[\s\S]*?```/, "").trim(),
+          score,
+          correctedCode,
+          hasCorrections: !!correctedCode,
+          originalCode: file.content,
+        };
+
+        newResults.push(result);
+
+        const newItem = {
+          userId: user.id,
+          fileName: result.fileName,
+          path: result.path,
+          timestamp: new Date().toISOString(),
+          score: result.score,
+        };
 
         try {
-          const response = await fetch(API_CONFIG.url, {
+          const historyResponse = await fetch(BACKEND_API.url, {
             method: "POST",
-            headers: API_CONFIG.headers,
-            body: JSON.stringify({
-              model: API_CONFIG.model,
-              messages: [
-                {
-                  role: "system",
-                  content: "You are a code review assistant. Analyze the code for errors, improvements, and security vulnerabilities. Provide a score (0-100) in <SCORE:XX> format and suggest corrections in a code block."
-                },
-                { role: "user", content: `Analyze this ${file.extension} file:\n${file.content}` }
-              ],
-              temperature: 0.7,
-              max_tokens: 2048
-            })
+            headers: BACKEND_API.headers,
+            body: JSON.stringify(newItem),
           });
 
-          if (!response.ok) throw new Error(`Server error: ${response.status}`);
-
-          const data = await response.json();
-          const aiResponse = data?.choices?.[0]?.message?.content || "No response received.";
-
-          const scoreMatch = aiResponse.match(/<SCORE:(\d+)>/);
-          const score = Math.min(Math.max(parseInt(scoreMatch?.[1] || "0"), 0), 100);
-
-          const correctedCodeMatch = aiResponse.match(/```(?:\w+\n)?([\s\S]*?)```/);
-          const correctedCode = correctedCodeMatch ? correctedCodeMatch[1].trim() : undefined;
-
-          setValidationResults((prev) => [...prev, {
-            fileName: file.name,
-            path: file.path,
-            code: file.content,
-            result: aiResponse.replace(/```[\s\S]*?```/, "").trim(),
-            score,
-            correctedCode,
-            hasCorrections: !!correctedCode
-          }]);
+          if (!historyResponse.ok) {
+            throw new Error(`Failed to save history: ${historyResponse.status}`);
+          }
+          console.log("History saved to backend:", newItem);
         } catch (error) {
-          setValidationResults((prev) => [...prev, {
-            fileName: file.name,
-            path: file.path,
-            code: file.content,
-            result: `Error: ${error instanceof Error ? error.message : "Failed to analyze code"}`,
-            score: 0,
-            hasCorrections: false
-          }]);
+          console.error("Error saving history to backend:", error);
         }
-      }));
-    } finally {
-      setStreamingState({ isAnalyzing: false, currentFile: "", currentStep: "" });
-    }
-  }, [files]);
+      } catch (error) {
+        const result: ValidationResult = {
+          fileName: file.name,
+          path: file.path,
+          code: file.content,
+          result: `Error: ${error instanceof Error ? error.message : "Failed to analyze code"}`,
+          score: 0,
+          hasCorrections: false,
+          originalCode: file.content,
+        };
+        newResults.push(result);
 
-  const runCode = useCallback(async () => {
-    if (!codeToRun.trim()) {
-      setExecutionOutput("Error: No code to execute");
-      return;
-    }
-
-    setExecutionOutput("Running...");
-
-    try {
-      const response = await axios.post(
-        JUDGE0_CONFIG.url,
-        { 
-          source_code: codeToRun, 
-          language_id: 71, 
-          stdin: "",
-          wait: true
-        },
-        { headers: JUDGE0_CONFIG.headers }
-      );
-
-      if (!response.data || !response.data.token) {
-        throw new Error("Invalid response from execution service");
-      }
-
-      const token = response.data.token;
-      let retries = 0;
-      const maxRetries = 10;
-
-      const checkResult = async () => {
-        if (retries >= maxRetries) {
-          setExecutionOutput("Execution timed out");
-          return;
-        }
+        const newItem = {
+          userId: user.id,
+          fileName: result.fileName,
+          path: result.path,
+          timestamp: new Date().toISOString(),
+          score: result.score,
+        };
 
         try {
-          const resultResponse = await axios.get(
-            `${JUDGE0_CONFIG.url}/${token}`,
-            { headers: JUDGE0_CONFIG.headers }
-          );
+          const historyResponse = await fetch(BACKEND_API.url, {
+            method: "POST",
+            headers: BACKEND_API.headers,
+            body: JSON.stringify(newItem),
+          });
 
-          const status = resultResponse.data.status;
-          
-          if (!status) {
-            throw new Error("Invalid status response");
+          if (!historyResponse.ok) {
+            throw new Error(`Failed to save history: ${historyResponse.status}`);
           }
-
-          // Status ID 1-2 means still processing
-          if (status.id <= 2 && retries < maxRetries) {
-            retries++;
-            setTimeout(checkResult, 1000);
-          } else if (status.id === 3) { // Status ID 3 means completed successfully
-            setExecutionOutput(resultResponse.data.stdout || "Code executed successfully");
-          } else { // Any other status means error
-            const errorMessage = resultResponse.data.stderr || status.description || "Execution failed";
-            setExecutionOutput(`Error: ${errorMessage}`);
-          }
+          console.log("Error history saved to backend:", newItem);
         } catch (error) {
-          setExecutionOutput(`Error checking execution status: ${error instanceof Error ? error.message : "Unknown error"}`);
+          console.error("Error saving history to backend:", error);
         }
-      };
-
-      await checkResult();
-    } catch (error) {
-      setExecutionOutput(`Error running code: ${error instanceof Error ? error.message : "Unknown error"}`);
+      }
     }
-  }, [codeToRun]);
+
+    setValidationResults(newResults);
+    setStreamingState({ isAnalyzing: false, currentFile: "", currentStep: "" });
+  }, [files, customPrompt, user]);
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] light:bg-gray-50 flex flex-col">
-      {/* Header Section */}
-      <header className="bg-[#121212] light:bg-white border-b border-gray-800 light:border-gray-200 sticky top-0 z-50 shadow-lg">
-        <div className="max-w-[1920px] mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3 px-5 py-3 bg-[#1a1a1a] light:bg-gray-100 rounded-lg border border-blue-900 light:border-blue-200 glow-border-blue">
-              <Code2 className="w-8 h-8 text-blue-400" />
-              <h1 className="text-3xl font-bold text-gray-200 light:text-gray-800 glow-text-blue">Code Amplifier</h1>
+    <div className={`min-h-screen ${theme === "dark" ? "dark bg-[#0a0a0a]" : "bg-white"}`}>
+      {/* Stylish Header */}
+      <header className="fixed top-0 left-0 right-0 h-16 bg-gray-800/95 backdrop-blur-sm border-b border-gray-700/50 z-40">
+        <div className="h-full flex items-center justify-between px-4 relative">
+          {/* User Icon and Dropdown (Left) */}
+          <div className="flex items-center">
+            <div className="relative">
+              <button
+                onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
+                className="p-2 rounded-full hover:bg-gray-700 transition-colors"
+                aria-label="User menu"
+              >
+                <User className="h-6 w-6 text-blue-500" />
+              </button>
+              {isUserMenuOpen && (
+                <div className="absolute left-0 mt-2 w-48 bg-gray-900 border border-gray-700 rounded-lg shadow-lg py-2">
+                  <div className="px-4 py-2 text-gray-100 font-medium border-b border-gray-700">
+                    {user?.username || "User"}
+                  </div>
+                  <Link
+                    to="/history"
+                    className="block px-4 py-2 text-gray-300 hover:bg-gray-800 hover:text-gray-100 transition-colors"
+                    onClick={() => setIsUserMenuOpen(false)}
+                  >
+                    File History
+                  </Link>
+                </div>
+              )}
             </div>
+          </div>
+
+          {/* Centered Code Amplifier Text */}
+          <div className="absolute left-1/2 transform -translate-x-1/2 flex items-center space-x-2">
+            <Code2 className="h-8 w-8 text-blue-500" />
+            <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-white">
+              Code Amplifier
+            </h1>
+          </div>
+
+          {/* Theme Toggle and Logout (Right) */}
+          <div className="flex items-center space-x-4">
             <button
               onClick={toggleTheme}
-              className="p-2 rounded-lg bg-[#1a1a1a] light:bg-gray-100 border border-gray-800 light:border-gray-300 hover:border-gray-700 light:hover:border-gray-400 transition-all duration-300"
+              className="p-2 rounded-full hover:bg-gray-700 transition-colors"
+              aria-label="Toggle theme"
             >
-              {theme === 'dark' ? (
-                <Sun className="w-5 h-5 text-yellow-400" />
+              {theme === "dark" ? (
+                <Sun className="h-5 w-5 text-gray-100" />
               ) : (
-                <Moon className="w-5 h-5 text-blue-400" />
+                <Moon className="h-5 w-5 text-gray-900" />
               )}
+            </button>
+            <button
+              onClick={logout}
+              className="px-4 py-1.5 text-sm font-medium text-white bg-red-500 rounded-full hover:bg-red-600 transition-colors"
+            >
+              Logout
             </button>
           </div>
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="flex-1 flex overflow-hidden">
-        {/* Left Panel */}
-        <div className="w-1/2 p-6 overflow-y-auto border-r border-gray-800 light:border-gray-200">
-          <div className="space-y-6 max-w-3xl mx-auto">
-            <MemoizedFileUploader onFilesSelected={handleFilesSelected} selectedFiles={files.map((f) => ({ name: f.name, path: f.path }))} />
-
-            {files.length > 0 && <MemoizedCodePreview files={files} />}
-
-            {streamingState.isAnalyzing && (
-              <div className="mt-4 p-4 bg-[#1a1a1a] border border-blue-900 rounded-lg shadow-lg animate-pulse">
-                <div className="flex items-center gap-3">
-                  <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-                  <div>
-                    <p className="text-blue-400 font-medium">Analyzing: {streamingState.currentFile}</p>
-                    <p className="text-sm text-gray-400 mt-1">{streamingState.currentStep}</p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div className="flex items-center justify-between gap-4">
-              <button
-                onClick={validateCode}
-                disabled={files.length === 0 || streamingState.isAnalyzing}
-                className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-lg font-medium transition-all duration-300
-                  ${files.length === 0 || streamingState.isAnalyzing
-                    ? 'bg-gray-800/50 text-gray-500 cursor-not-allowed'
-                    : 'bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30'}`}
+      {/* Main Content Area */}
+      <main className="container mx-auto p-4 pt-20 flex space-x-8">
+        <div className="w-1/2">
+          <FileUploader onFilesSelected={handleFilesSelected} />
+          <div className="mt-8 space-y-4">
+            <div>
+              <label
+                htmlFor="custom-prompt"
+                className="block text-sm font-medium text-gray-200 dark:text-gray-200 light:text-gray-800 mb-1"
               >
-                <Wand2 className="w-5 h-5" />
-                {streamingState.isAnalyzing ? 'Analyzing...' : 'Analyze Code'}
-              </button>
+                Custom Prompt (Optional)
+              </label>
+              <textarea
+                id="custom-prompt"
+                value={customPrompt}
+                onChange={(e) => setCustomPrompt(e.target.value)}
+                placeholder="Enter any additional instructions for the code analysis (e.g., 'Focus on performance optimizations')"
+                className="w-full p-3 rounded-lg border bg-[#1a1a1a] light:bg-gray-100 border-gray-800 light:border-gray-200 text-gray-300 light:text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                rows={3}
+              />
             </div>
+            <button
+              onClick={validateCode}
+              disabled={files.length === 0 || streamingState.isAnalyzing}
+              className={`w-full flex items-center justify-center gap-2 px-6 py-3 rounded-lg font-medium transition-all duration-300 ${
+                files.length === 0 || streamingState.isAnalyzing
+                  ? "bg-gray-800/50 text-gray-500 cursor-not-allowed"
+                  : "bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30"
+              }`}
+            >
+              <Wand2 className="w-5 h-5" />
+              {streamingState.isAnalyzing ? "Analyzing..." : "Validate Code"}
+            </button>
+          </div>
+          <div className="mt-8">
+            <CodePreview files={files} onDeleteFile={handleDeleteFile} />
           </div>
         </div>
 
-        {/* Right Panel */}
-        <div className="w-1/2 p-6 overflow-y-auto bg-[#0a0a0a] light:bg-gray-50">
-          <div className="space-y-6 max-w-3xl mx-auto">
-            <div className="flex items-center justify-between">
-              <h2 className="text-2xl font-bold text-gray-200 light:text-gray-800">Analysis Results</h2>
-              <button
-                onClick={() => setIsCodeEditorOpen(!isCodeEditorOpen)}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#1a1a1a] light:bg-gray-100 border border-gray-800 light:border-gray-200 hover:border-gray-700 light:hover:border-gray-300 transition-all duration-300"
-              >
-                <Terminal className="w-4 h-4" />
-                Code Editor
-              </button>
-            </div>
+        <div className="w-px bg-gray-200 dark:bg-gray-700" />
 
-            {isCodeEditorOpen && (
-              <div className="bg-[#121212] light:bg-white rounded-xl p-6 border border-gray-800 light:border-gray-200">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-medium text-gray-200 light:text-gray-800">Code Editor</h3>
-                  <button
-                    onClick={runCode}
-                    disabled={!codeToRun.trim()}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-300
-                      ${!codeToRun.trim()
-                        ? 'bg-gray-800/50 text-gray-500 cursor-not-allowed'
-                        : 'bg-green-500/20 text-green-400 border border-green-500/30 hover:bg-green-500/30'}`}
-                  >
-                    <Play className="w-4 h-4" />
-                    Run Code
-                  </button>
-                </div>
-
-                <div className="space-y-4">
-                  <textarea
-                    value={codeToRun}
-                    onChange={(e) => setCodeToRun(e.target.value)}
-                    placeholder="Enter your code here..."
-                    className="w-full h-48 p-4 bg-[#1a1a1a] light:bg-gray-100 rounded-lg border border-gray-800 light:border-gray-200 text-gray-300 light:text-gray-700 font-mono text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500/30"
-                  />
-
-                  {executionOutput && (
-                    <div className="p-4 bg-[#1a1a1a] light:bg-gray-100 rounded-lg border border-gray-800 light:border-gray-200">
-                      <h4 className="text-sm font-medium text-gray-400 mb-2">Output:</h4>
-                      <pre className="text-sm text-gray-300 light:text-gray-700 font-mono whitespace-pre-wrap">
-                        {executionOutput}
-                      </pre>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            <MemoizedValidationResults
-              results={validationResults}
-              onSaveCorrection={(result) => {
-                if (result.correctedCode) {
-                  setCodeToRun(result.correctedCode);
-                  setIsCodeEditorOpen(true);
-                }
-              }}
-            />
-          </div>
+        <div className="w-1/2">
+          <ValidationResults results={validationResults} />
         </div>
       </main>
     </div>
   );
 }
 
-function App() {
+function AppRoutes() {
   return (
-    <ErrorBoundary>
-      <ThemeProvider>
-        <Suspense fallback={<div className="animate-pulse">Loading...</div>}>
-          <AppContent />
-        </Suspense>
-      </ThemeProvider>
-    </ErrorBoundary>
+    <Routes>
+      <Route path="/login" element={<Login />} />
+      <Route path="/register" element={<Register />} />
+      <Route path="/loading" element={<LoadingScreen />} />
+      <Route
+        path="/"
+        element={<Navigate to="/loading" />}
+      />
+      <Route
+        path="/app"
+        element={
+          <ProtectedRoute>
+            <AppContent />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/history"
+        element={
+          <ProtectedRoute>
+            <FileHistory />
+          </ProtectedRoute>
+        }
+      />
+    </Routes>
   );
 }
 
-export default App;
+const App = () => {
+  return (
+    <Router>
+      <AppRoutes />
+    </Router>
+  );
+};
+
+const AppWrapper = () => (
+  <ErrorBoundary>
+    <ThemeProvider>
+      <AuthProvider>
+        <App />
+      </AuthProvider>
+    </ThemeProvider>
+  </ErrorBoundary>
+);
+
+export default AppWrapper;

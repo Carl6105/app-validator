@@ -33,3 +33,25 @@
     @apply scrollbar-thumb-gray-700 scrollbar-track-gray-900 light:scrollbar-thumb-gray-300 light:scrollbar-track-gray-100;
   }
 }
+
+@keyframes glow {
+  0% {
+    text-shadow: 0 0 5px rgba(59, 130, 246, 0.8), 0 0 10px rgba(59, 130, 246, 0.8), 0 0 20px rgba(59, 130, 246, 0.8);
+  }
+  50% {
+    text-shadow: 0 0 10px rgba(59, 130, 246, 0.8), 0 0 20px rgba(59, 130, 246, 0.8), 0 0 30px rgba(59, 130, 246, 0.8);
+  }
+  100% {
+    text-shadow: 0 0 5px rgba(59, 130, 246, 0.8), 0 0 10px rgba(59, 130, 246, 0.8), 0 0 20px rgba(59, 130, 246, 0.8);
+  }
+}
+
+.glow-text-blue {
+  @apply text-[#42dcff];
+  animation: glow 2s infinite;
+  transition: text-shadow 0.3s ease-in-out;
+}
+
+.glow-text-blue:hover {
+  text-shadow: 0 0 10px rgba(59, 130, 246, 0.8), 0 0 20px rgba(59, 130, 246, 0.8), 0 0 30px rgba(59, 130, 246, 0.8);
+}
